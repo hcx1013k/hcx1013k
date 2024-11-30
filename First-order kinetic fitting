@@ -1,0 +1,378 @@
+function NIHE()
+    clear all;
+    % 导入数据
+    folder_path = 'G:\20240629 hela+20UGML ANTI-EGFR-16.6FPS\sectionIntensity\data process\Image Intensity_merged_files';
+    wenjian = 'G:\20240629 hela+20UGML ANTI-EGFR-16.6FPS\sectionIntensity\data process\fiting_Image Intensity1';
+    unsorted_files = dir(fullfile(folder_path, '*.csv'));
+
+    % 自然数排序
+    [~, order] = natsort({unsorted_files.name});
+    files = unsorted_files(order);
+    num_files = length(files);
+
+    % 手动输入浓度和初始解离起始点
+    concentration = 111;  % 输入分析物浓度
+    input_index2 = 120;  % 输入初始解离起始点（时间）
+
+   % 自动识别表头
+    sample_file = fullfile(folder_path, unsorted_files(1).name);
+    
+    % 使用 readtable 读取文件并获取表头
+    sample_data = readtable(sample_file);  % 读取为表格
+    header = sample_data.Properties.VariableNames;  % 提取表头
+    columns = header(2:end);  % 从第二列开始
+    column_indices = 2:length(header);  % 对应的列索引
+    base_folders = columns;  % 文件夹名称与列名一致
+
+    % 为每个列创建独立的输出文件夹
+    parfor col_idx =22 %1:length(columns)
+        % 创建相应的文件夹
+        output_folder = fullfile(wenjian, base_folders{col_idx});
+        all_txt_folder = fullfile(output_folder, 'all-txt');
+        all_jpg_folder = fullfile(output_folder, 'all-jpg');
+        success_txt_folder = fullfile(output_folder, 'success_txt');
+        fail_txt_folder = fullfile(output_folder, 'fail_txt');
+        success_jpg_folder = fullfile(output_folder, 'success_jpg');
+        fail_jpg_folder = fullfile(output_folder, 'fail_jpg');
+        original_jpg_folder=fullfile(output_folder, 'original_jpg_folder');
+        
+
+        % 创建所有分类文件夹
+        folders = {all_txt_folder, all_jpg_folder, success_txt_folder, fail_txt_folder, success_jpg_folder, fail_jpg_folder,original_jpg_folder};
+        for i = 1:length(folders)
+            if ~exist(folders{i}, 'dir')
+                mkdir(folders{i});
+            end
+        end
+
+  
+     % 定义空矩阵保存数据
+    data2 = [];
+    rmse_values = [];
+    r_max_values=[];
+    Residual_Std_values=[];
+    Residual_Std_binding_values=[];
+    Residual_Std_dissociation_values=[];
+    % -----------------------------------------------------------
+        % K折交叉验证参数
+        K = 5;  % K折交叉验证，折数可以根据需要调整
+        cv = cvpartition(num_files, 'KFold', K);  % 创建K折交叉验证对象
+    % -----------------------------------------------------------
+        for k = 1:k  % K折交叉验证循环
+        train_idx = cv.training(k);  % 训练集索引
+        test_idx = cv.test(k);  % 测试集索引
+
+    % 获取当前训练集和测试集的数据
+        train_files = files(train_idx);
+        test_files = files(test_idx);
+
+        % 训练集拟合过程
+        for i = 1:length(train_files)
+                file1 = fullfile(folder_path, train_files(i).name);
+                file1name = train_files(i).name;
+                file1namenum = str2double(regexp(file1name, '\d+', 'match'));
+
+            G = readmatrix(file1);
+            x = G(:, 1);  % 时间数据
+            y = G(:, column_indices(col_idx)); % 当前列数据
+            
+
+        % 使用百分位数方法去除上下5%的噪音点
+
+        % Step 1: 计算上下 5% 的分位数
+        lower_percentile = prctile(y, 5);   % 下5%分位数
+        upper_percentile = prctile(y, 95);  % 上95%分位数
+    
+        % Step 2: 筛选掉小于下5%或大于上95%的数据点
+        valid_idx = (y >= lower_percentile) & (y <= upper_percentile);
+    
+        % Step 3: 获取筛选后的数据 
+        y_filtered = y(valid_idx);
+    
+        % Step 4: 生成新的 x 轴数据，长度与 y_filtered 一致
+        x_filtered = (0:length(y_filtered)-1)';  % 生成从 0 到 y_filtered 长度的 x 轴数据
+        
+        % 使用新的 x 和 y 进行后续处理
+        % 整个过程的终点，等于解离末端（即时间数据的最大值）
+        index3 = length(x_filtered);
+    
+        % 扩展基线查找范围为 20 到 50 秒（根据新的 x 轴值）
+        % 注意：需要根据新的 x 轴单位调整 20 到 50 秒范围的逻辑
+        index1 = find_baseline(x_filtered, y_filtered, 8, 25);%
+
+        % 基线校正（使用前 index1 个数据点的平均值作为基线）
+        y1 = y(1:index1);
+        D = mean(y1);  % 基线的平均值
+      
+
+        % 处理数据
+        x4 = x_filtered(1:index1);
+        y4 = y_filtered(1:index1);
+        y5 = y4 - D;  % 基线校正后的数据
+        
+        index2=input_index2;
+
+        % 解离段
+        x6 = x_filtered(index2+1:index3);
+        y6 = y_filtered(index2+1:index3);
+        y6 = y_filtered(index2+1:index3) - D;
+      
+        %结合
+        x2 = x_filtered(index1+1:index2);
+        y2=y_filtered(index1+1:index2);
+        y2 = y_filtered(index1+1:index2) - D;
+
+
+        % 应用 Q 检验去除异常点
+        [x2, y2] = q_test(x2, y2);
+        [x6, y6] = q_test(x6, y6);
+
+        % 调用拟合函数
+        [A, B, C] = nonlinear_least_squares_fit(x2, y2, x6, y6, index2, index1);
+
+        % 计算 Kon, Koff, kd
+        Koff = C;  % C 是解离速率常数
+        K2 = B - C;  % 结合速率常数部分
+        Kon = (K2 / concentration) * 1e9;  % 使用输入的浓度计算 Kon，单位转换为 1/M/s
+        kd = Koff / Kon;  % 结合平衡常数 (kd)
+
+        % 拟合曲线函数
+        fun2 = @(p, x) p(1)*(1-exp(-p(2)*(x-(index1+1))));
+        fun3 = @(p, x) p(1)*exp(-p(3)*(x-index2-1));
+        
+
+        % 计算拟合曲线的 y 值
+        yfit2 = fun2([A, B, C], x2);
+        % delta 的计算用于消除结合段和解离段之间的偏差
+        delta = yfit2(end) - fun3([A, B, C], index2 + 1); 
+        yfit3 = fun3([A, B, C], x6) + delta;  % 使用 delta 进行偏移校正
+        y6 = y6 + delta;  % 对原始数据也应用相同的校正
+
+        % 将数据保存在一个临时矩阵中
+        x0 = [x4; x2; x6];
+        y0 = [y5; y2; y6];
+        yfit = [0*ones(size(x4)); yfit2; yfit3];
+        
+
+        % 计算总残差
+        residuals = y0 - yfit;
+        residual_mean = mean(residuals);  % 计算总残差的平均值
+        residual_std = std(residuals);  % 计算总残差的标准差
+        Residual_Std_values=[Residual_Std_values; residual_std]; % 收集Residual_Std便于计算10%r_max
+        
+        % 计算结合段的残差
+        residuals_binding = y2 - yfit2;  % 结合阶段的残差
+        residual_std_binding = std(residuals_binding);  % 结合阶段残差的标准差
+        Residual_Std_binding_values=[Residual_Std_binding_values; residual_std_binding];
+        
+        % 计算解离段的残差
+        residuals_dissociation = y6 - yfit3;  % 解离阶段的残差
+        residual_std_dissociation = std(residuals_dissociation);  % 解离阶段残差的标准差
+        Residual_Std_dissociation_values=[Residual_Std_dissociation_values; residual_std_dissociation];
+        
+        %计算均方根残差
+        mse=mean((y0-yfit).^2); 
+        rmse=sqrt(mse); %计算均方根误差
+
+        % 将该折的 RMSE 存储到 rmse_values 数组
+        rmse_values = [rmse_values; rmse];
+
+        % 计算拟合评价指标
+        r_squared = 1 - sum((y0 - yfit).^2) / sum((y0 - mean(y0)).^2);  % R² 值
+        r_max = max(abs(yfit2));
+        % 收集r_max便于计算10%r_max
+        r_max_values = [r_max_values; r_max]; 
+        
+        mse = mean((y0 - yfit).^2);  % 均方误差
+        epsilon = 1e-9;  % 防止除以零
+        chi_squared = sum(((y0 - yfit).^2) ./ (yfit + epsilon));
+        degrees_of_freedom = length(y0) - 3;  % 自由度
+        chi_squared_per_degree = chi_squared / degrees_of_freedom;
+
+        % 计算调整后的 R²
+        adjusted_r_squared = 1 - (1 - r_squared) * (length(y0) - 1) / (length(y0) - 3 - 1);
+
+        
+
+
+        % 计算残差正态性检验（Jarque-Bera 检验）
+        [h_jb, p_value_jb] = jbtest(residuals);
+
+        % 保存图像和数据到 all-txt 和 all-jpg 文件夹
+        %for col = columns
+            %folders = output_folders.(col{1});
+            h = figure('Visible', 'off');
+            plot(x4, y5, 'ro', 'MarkerFaceColor', 'r', 'MarkerSize', 5);  % 红色实心圆点
+            hold on;
+            plot(x2, y2, 'go', 'MarkerFaceColor', 'g', 'MarkerSize', 5);  % 绿色实心圆点
+            plot(x6, y6, 'bo', 'MarkerFaceColor', 'b', 'MarkerSize', 5);  % 蓝色实心圆点
+            plot(x4, 0*ones(size(x4)), 'r-', 'LineWidth', 4);   % 红色线条，粗细2
+            plot(x2, yfit2, 'g-', 'LineWidth', 4);              % 绿色线条，粗细2
+            plot(x6, yfit3, 'b-', 'LineWidth', 4);              % 蓝色线条，粗细2
+            xlabel('Time (s)');
+            ylabel('SPR signal');
+            title(['文件编号: ', num2str(file1namenum)]);
+            saveas(h, fullfile(all_jpg_folder, [num2str(file1namenum), '.jpg']));
+            close(h);
+            f = figure('Visible', 'off');
+            f =plot(x,y,'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 5);
+            title(['文件编号: ', num2str(file1namenum)]);
+            saveas(f, fullfile(original_jpg_folder, [num2str(file1namenum), '.jpg']));
+
+            % 保存数据到txt文件
+            data = [x0, y0, yfit];
+            dlmwrite(fullfile(all_txt_folder, ['cell', num2str(file1namenum), '.txt']), data, 'delimiter', '\t');
+        %end
+
+        % 计算其他拟合相关的指标用于分类
+        association_dissociation = mean(y0(input_index2-10:input_index2+20));
+        dissociation_end = mean(y0(end-30:end));
+        end_yfit = yfit(end);
+        mean_koff = mean(abs(y6));
+
+        % 找到最小的 RMSE 和对应的折号
+        [best_rmse, best_fold] = min(rmse_values);
+
+        % 保存每个文件的拟合结果到data2
+        data1 = {file1namenum, Kon, Koff, kd, r_max, r_squared, adjusted_r_squared,rmse,chi_squared_per_degree, residual_mean, residual_std, residual_std_binding, residual_std_dissociation, end_yfit, mean_koff, abs(dissociation_end), abs(association_dissociation)};
+        
+        data2 = [data2; data1];
+    end
+
+   % 手动定义表头
+header = {'文件编号', 'Kon', 'Koff', 'kd', 'R_max', 'R_squared', 'Adj_R_squared','rmse','chi_squared_per_degree', 'Residual_Mean', 'Residual_Std', 'residuals_std_binding', 'residuals_std_dissociation', 'end_yfit', 'mean_koff', 'dissociation_end', 'association_dissociation'};
+summary_file_template = fullfile(output_folder, 'summary.csv');
+
+% 将 data2 转换为表格
+%for col = columns
+    summary_file = summary_file_template;
+    data_table = cell2table(data2, 'VariableNames', header);
+    % 使用 writetable 保存表格数据
+    writetable(data_table, summary_file, 'WriteMode', 'overwrite');
+%end
+
+% 读取 summary 数据并根据条件判断拟合成功与否
+%for col = columns
+    folders = output_folder;
+    summary_file = summary_file_template;
+    summary_data = readtable(summary_file, 'VariableNamingRule', 'preserve');
+
+    % 计算 R_max 的 10% 分位数；Residual_Std  95% 分位数
+    r_max_threshold = prctile(r_max_values, 10);
+    Residual_Std_threshold = prctile(Residual_Std_values, 99);
+    
+    for t = 1:height(summary_data)
+       Kon = summary_data.('Kon')(t);
+        Koff = summary_data.('Koff')(t);
+        r_max = summary_data.('R_max')(t);
+        residual_std = summary_data.('Residual_Std')(t);
+        rmse = summary_data.('rmse')(t);
+        end_yfit = summary_data.('end_yfit')(t);
+        mean_koff = summary_data.('mean_koff')(t);
+        dissociation_end = summary_data.('dissociation_end')(t);
+        association_dissociation = summary_data.('association_dissociation')(t);
+        %% 计算 Residual_Std 和 R_max 的比值
+        relative_std = residual_std / r_max;
+
+        %% 判断是否满足条件
+        kon_koff_check = (Kon > 1e3 && Kon < 1e8) && (Koff > 1e-5 && Koff < 1e-2);
+        %relative_std_check=relative_std < 0.05;
+        binding_dissociation_check = (association_dissociation > dissociation_end) && (dissociation_end> 0);
+        R_max_check = r_max>r_max_threshold;
+        rmse_check = rmse < 0.2*r_max;
+
+       
+        % 更新 Fit_Status
+        if  kon_koff_check  && binding_dissociation_check && R_max_check && rmse_check
+            summary_data.Fit_Status{t} = 'Success';
+        else
+            summary_data.Fit_Status{t} = 'Fail';
+        end
+    end
+
+    % 保存更新后的 summary
+    header = {'文件编号', 'Kon(1/nM/s)', 'Koff(1/s)', 'kd(Kd)', 'R_max', 'R_squared', 'Adj_R_squared','rmse','chi_squared_per_degree', 'Residual_Mean', 'Residual_Std', 'Residuals_std_binding', 'Residuals_STD_dissociation', 'end_yfit','mean_koff','dissociation_end','association_dissociation','Fit_Status'};
+    summary_data.Properties.VariableNames = header;
+    writetable(summary_data, summary_file);
+   
+    % 文件分类保存
+    file_numbers = summary_data.('文件编号');  % 读取文件编号列
+    fit_status = summary_data.('Fit_Status');  % 读取 Fit_Status 列
+
+    % 遍历文件编号并根据 Fit_Status 进行分类
+    for k = 1: height(summary_data)
+        file_number_str = num2str(file_numbers(k));
+
+        % 构建对应的 txt 和 jpg 文件名
+        txt_file = fullfile(all_txt_folder, ['cell', file_number_str, '.txt']);
+        jpg_file = fullfile(all_jpg_folder, [file_number_str, '.jpg']);
+    
+        % 根据 Fit_Status 分类文件到不同文件夹
+        if strcmp(fit_status{k}, 'Fail')
+            % 将文件移动到 fail 文件夹
+            copyfile(txt_file, fullfile(fail_txt_folder, ['cell', file_number_str, '.txt']));
+            copyfile(jpg_file, fullfile(fail_jpg_folder, [file_number_str, '.jpg']));
+        elseif strcmp(fit_status{k}, 'Success')
+            % 将文件移动到 success 文件夹
+            copyfile(txt_file, fullfile(success_txt_folder, ['cell', file_number_str, '.txt']));
+            copyfile(jpg_file, fullfile(success_jpg_folder, [file_number_str, '.jpg']));
+        end
+    end
+    end
+
+    %关闭并行池
+    delete(gcp);
+
+disp('文件分类完成。');
+
+end
+
+
+function index1 = find_baseline(x, y, start_time, end_time)
+    % 查找时间在 start_time 和 end_time 之间的索引
+    valid_idx = (x >= start_time) & (x <= end_time);
+    
+    % 限定在给定时间范围内的数据
+    x_range = x(valid_idx);
+    y_range = y(valid_idx);
+    
+    % 滑动窗口大小设置为20秒，可以根据需要调整
+    window_size = 5;  % 滑动窗口大小为20个数据点（可以调整）
+    std_threshold = 0.05;  % 标准差阈值，定义平稳部分（可以根据数据特点调整）
+    
+    % 寻找最平稳的部分作为基线
+    for i = 1:(length(y_range) - window_size)
+        window = y_range(i:(i+window_size-1));  % 选择窗口内的数据段
+        if std(window) < std_threshold  % 判断标准差是否在阈值以内
+            index1 = find(x == x_range(i + window_size - 1));  % 返回找到的基线点的索引
+            return;
+        end
+    end
+    
+    % 如果没有找到平稳的段落，则返回初始段落（至20秒）作为基线
+    default_duration = 10;  % 默认至少选取20秒的数据作为基线
+    index1 = find(x >= start_time, 1) + default_duration - 1;
+    if index1 > length(x)
+        index1 = length(x);  % 防止超出数据的最大长度
+    end
+end 
+
+% Q 检验函数，删除离群值
+function [x_filtered, y_filtered] = q_test(x, y)
+    % 计算Q值
+    n = length(y);
+    q_critical = [0.941, 0.765, 0.642, 0.560, 0.507];  % 5个数据点以下的Q值（90%信任区间）
+    max_iter = min(n - 2, 5);  % 至少需要3个点才能应用Q检验
+    for i = 1:max_iter
+        [~, idx] = max(abs(y - mean(y)));  % 找到离群值
+        q_value = abs(y(idx) - mean(y)) / (max(y) - min(y));  % 计算Q值
+        if q_value > q_critical(i)
+            x(idx) = [];  % 删除离群值
+            y(idx) = [];
+        else
+            break;  % 如果Q值小于严重值，停止删除
+        end
+    end
+    x_filtered = x;
+    y_filtered = y;
+end
